@@ -476,16 +476,31 @@ function padNum(n, len) {
 
 // ── MAIN PARSER ──
 function parsePDF(text) {
-  // Site info
-  const siteName = grabLine(text, 'Site Name');
-  const clli = (text.match(/CLLI[^:]*[\s:]+([A-Z0-9]{4,8})/i) || [])[1] || '';
-  const vsz = (text.match(/Property ID[^:]*[\s:]+(\d{6,15})/i) || text.match(/Realm[\s:]+(\d{6,15})/i) || [])[1] || '';
-  const address = grabLine(text, 'Full Address');
-  const circuit = grabLine(text, 'Circuit ID');
-  const vendor = detectVendor(text);
+  // pdf.js smashes words together with spaces — normalize multiple spaces to single
+  const t = text.replace(/[ \t]+/g, ' ');
 
-  // Property abbreviation: use site name cleaned up (max 24 chars, no spaces)
+  // 1) Site Name: grab only up to the next known field label so we don't bleed into the next line
+  const siteNameRaw = (t.match(/Site Name\s+(.+?)(?=\s+Full Address|\s+Installation Type|\s+Property ID|\s+CLLI)/i) || [])[1]?.trim() || grabLine(t, 'Site Name');
+  const siteName = siteNameRaw.trim();
+
+  // 2) Property Abbreviation: site name with no spaces, no special chars, max 24
   const propAbbr = siteName.replace(/[^a-zA-Z0-9]/g, '').substring(0, 24);
+
+  // 3) CLLI Code: label can be "CLLI Code" or "CLLI Code (First 6 Characters)"
+  //    value is all-caps letters+digits immediately after, stop at whitespace
+  const clli = (t.match(/CLLI Code[^:]*?[\s:]+([A-Z0-9]{4,8})(?=\s)/i) || t.match(/CLLI\s+([A-Z0-9]{4,8})(?=\s)/i) || [])[1]?.trim().toUpperCase() || '';
+
+  // 4) Property ID / Realm: stop before any non-digit
+  const vsz = (t.match(/Property ID[^:]*?[\s:]+(\d{6,15})(?=\s|$)/i) || t.match(/Realm[\s:]+(\d{6,15})(?=\s|$)/i) || [])[1]?.trim() || '';
+
+  // 5) Full Address: grab only the address value, stop before the next label
+  const address = (t.match(/Full Address[^)]*\)\s*(.+?)(?=\s+Installation Type|\s+Property ID|\s+CLLI|\s+Site Contact)/i) || [])[1]?.trim() || '';
+
+  // 6) Circuit ID: stop at semicolon (include it) or at next known field label
+  const circuitRaw = (t.match(/Circuit ID\s*#?\s*(.+?)(?=\s+Circuit Size|\s+Network Interface|\s+Demarc|\n)/i) || [])[1]?.trim() || '';
+  const circuit = circuitRaw.includes(';') ? circuitRaw.substring(0, circuitRaw.indexOf(';') + 1) : circuitRaw;
+
+  const vendor = detectVendor(t);
 
   // Fill form fields
   setField('f-siteName', siteName);
@@ -500,20 +515,21 @@ function parsePDF(text) {
     if (vendorSel.options[i].value === vendor) { vendorSel.selectedIndex = i; break; }
   }
 
-  // Parse APs
-  // pdf.js concatenates text with spaces; AP blocks start with "AP Device Number" pattern
+  // Parse APs using normalized text
   const apBlocks = [];
   const apRegex = /AP Device Number\s+(\d+)([\s\S]*?)(?=AP Device Number\s+\d+|NETWORK TESTING|SIGN OFF|Speed Test)/gi;
   let m;
-  while ((m = apRegex.exec(text)) !== null) {
+  while ((m = apRegex.exec(t)) !== null) {
     apBlocks.push({ num: m[1], body: m[2] });
   }
 
   state.aps = apBlocks.map(({ num, body }) => {
-    const location = (body.match(/AP Location Description\s+([^\n\r]{1,60})/i) || [])[1]?.trim() || '';
+    // Location: stop before next known label
+    const location = (body.match(/AP Location Description\s+(.+?)(?=\s+Provide the room|\s+AP Device Model|\s+AP Serial|\s+AP MAC)/i) || body.match(/AP Location Description\s+([^\n\r]{1,60})/i) || [])[1]?.trim() || '';
     const model = (body.match(/AP Device Model\s+([^\n\r]{1,30})/i) || [])[1]?.trim() || '';
     const serial = (body.match(/AP Serial Number\s+(\d{6,15})/i) || [])[1]?.trim() || '';
-    const macRaw = (body.match(/AP MAC Address\s+([0-9A-Fa-f:.\-]{11,17})/i) || [])[1]?.trim() || '';
+    // MAC: flexible match for formats like 00:33:58:22:F2:70 or 10:FO:68:3C:83:50
+    const macRaw = (body.match(/AP MAC Address\s+([0-9A-Fa-fOo:.\-]{11,17})/i) || [])[1]?.trim() || '';
     const building = ((body.match(/AP Building Number\s+(\d+)/i) || [])[1] || '01').padStart(2, '0');
     const floor = ((body.match(/AP Floor Number\s+(\d+)/i) || [])[1] || '01').padStart(2, '0');
     return {
@@ -528,14 +544,13 @@ function parsePDF(text) {
     };
   });
 
-  // Parse Network Devices (switches, firewalls, etc.)
+  // Parse Network Devices
   const netRegex = /Network Device Type\s+([^\n\r]{1,40})/gi;
   const netDevices = [];
   let nm;
-  while ((nm = netRegex.exec(text)) !== null) {
+  while ((nm = netRegex.exec(t)) !== null) {
     const deviceType = nm[1].trim();
-    // Grab nearby fields
-    const snippet = text.substring(nm.index, nm.index + 400);
+    const snippet = t.substring(nm.index, nm.index + 400);
     const loc = (snippet.match(/Network Device Location[^)]*\)\s*([^\n\r]{1,60})/i) || snippet.match(/Room[#\s]*([^\n\r]{1,40})/i) || [])[1]?.trim() || '';
     netDevices.push({
       deviceType,
