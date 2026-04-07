@@ -711,129 +711,294 @@ function renderNetTable() {
 }
 
 // ── EXPORT XLSX ──
+// Exactly matches the column structure Ansible expects from the tracker template.
+//
+// AP Tracker layout (matches gold standard Wyndham file):
+//   Row 1  : hidden reference row — cols Y-AJ hold site metadata used by formulas
+//   Row 2  : column headers
+//   Row 3+ : data
+//   Col A  = AP Serial Number        (value)
+//   Col B  = AP MAC                  (formula from K — autofilled)
+//   Col C  = vSZ Zone                (formula from AJ — autofilled)
+//   Col D  = AP Model Number         (value)
+//   Col E  = AP Name                 (formula from Z,AB,AD,AF,G — autofilled)
+//   Col F  = Description             (formula from AD,C,H,I,J — autofilled)
+//   Col G  = AP Number Match         (value, zero-padded 3 digits)
+//   Col H  = Building                (value)
+//   Col I  = Floor                   (value)
+//   Col J  = Installed Area          (value)
+//   Col K  = Raw MAC Address         (value — 12 hex chars, no separators)
+//   Col L  = x                       (blank spacer)
+//   Col M  = Installation Date       (blank)
+//   Col N  = Cabled Date             (blank)
+//   Col O  = CatX CC Test P/F        (blank)
+//   Col P  = RF Signal Level 2.4 GHz (blank)
+//   Col Q  = RF Signal Level 5 GHz   (blank)
+//   Col R  = AP Speed Test DL        (blank)
+//   Col S  = AP Speed Test UL        (blank)
+//   Col T  = Post Install Pkg        (blank)
+//
+// Net Equip Tracker layout:
+//   Row 1  : column headers
+//   Row 2+ : data
+//   Col A  = Device Type
+//   Col B  = Device Name             (formula-style name)
+//   Col C  = IP Address              (blank — comes from design doc)
+//   Col D  = Uplink Port             (blank)
+//   Col E  = Number of APs           (blank)
+//   Col F  = MODEL
+//   Col G  = MAC Address             (formula from L — autofilled)
+//   Col H  = Building
+//   Col I  = Floor (2 digit)
+//   Col J  = Device Number
+//   Col K  = Serial #
+//   Col L  = Fill-in Raw Mac Address (12 hex chars, no separators)
+//   Col M  = Network Device Install Date (blank)
+//   Col N  = Install Location
+//   Col O  = NOTES
+
 function exportXLSX() {
   const s = state.site;
   const wb = XLSX.utils.book_new();
 
   // ── Site Data sheet ──
-  const sdData = [
-    ['Fill in data on this sheet'],
-    ['Site Name', s.siteName],
-    ['Property Abbreviation', s.propAbbr],
-    ['Site Address', document.getElementById('f-address').value],
-    ['City', ''],
-    ['State', ''],
-    ['Zip Code', ''],
-    ['CLLI Code (First 6 Characters)', s.clli],
-    ['Provider (USE DROP DOWN)', s.vendor],
-    ['Vertical', s.vertical],
-    ['vSZ Zone', s.vsz],
-    ['AP Count', state.aps.length],
+  // Rows match exactly the B-column positions the AP Tracker formulas reference:
+  // B3=PropAbbr, B8=CLLI, B9=Vendor, B10=Vertical, B11=vSZ, B12=APCount
+  const sdRows = [
+    ['Fill in data on this sheet'],                          // row 1
+    ['Site Name', s.siteName],                              // row 2
+    ['Property Abbreviation', s.propAbbr],                  // row 3  ← AD formula
+    ['Site Address', document.getElementById('f-address').value], // row 4
+    ['City', ''],                                           // row 5
+    ['State', ''],                                          // row 6
+    ['Zip Code', ''],                                       // row 7
+    ['CLLI Code (First 6 Characters)', s.clli],             // row 8  ← AB formula
+    ['Provider (USE DROP DOWN)', s.vendor],                 // row 9  ← Z formula
+    ['Vertical', s.vertical],                               // row 10 ← AF formula
+    ['vSZ Zone', s.vsz],                                    // row 11 ← AJ formula
+    ['AP Count', state.aps.length],                         // row 12 ← AH formula
     ['APs to be Cabled', ''],
     ['vmEdge Count', 0],
-    ['FireWall Count', 0],
-    ['AGG Switch Count', 0],
+    ['FireWall Count', state.netEquip.filter(d=>d.deviceType.toLowerCase().includes('fire')||d.deviceType.toLowerCase().includes('gate')).length],
+    ['AGG Switch Count', state.netEquip.filter(d=>d.deviceType.toLowerCase().includes('aggregate')).length],
     ['SAG Count (Secondary Agg switch)', 0],
-    ['PoE Switch Count', 0],
+    ['PoE Switch Count', state.netEquip.filter(d=>d.deviceType.toLowerCase().includes('downlink')||d.deviceType.toLowerCase().includes('poe')).length],
     ['MDF-IDF Count', ''],
     ['MDF-IDFs to be Built', ''],
     [],
     ['DM', ''],
     ['Site Lead', ''],
-    ['Designer', ''],
+    ['Designer', 'Select Designer'],
     ['D&D PM', ''],
     ['Core PM', ''],
     ['NOC Service Delivery Lead', 'Russell Jones'],
-    ['SSIDs', '', '', 'WPA2 Key (if applicable)'],
+    ['SSIDs', null, null, 'WPA2 Key (if applicable)'],
     ['Onboarding (if applicable)', ''],
-    ['Resident (if applicable)', ''],
+    ['Resident (if applicable)', '', null, 'You create your own after joining Onboard SSID'],
     ['Guest', ''],
     ['Private', ''],
+    ['Additional SSID (if applicable)', ''],
+    ['Additional SSID (if applicable)', ''],
   ];
-  const sdWS = XLSX.utils.aoa_to_sheet(sdData);
+  const sdWS = XLSX.utils.aoa_to_sheet(sdRows);
+  sdWS['!cols'] = [{wch:32},{wch:32},{wch:4},{wch:40}];
   XLSX.utils.book_append_sheet(wb, sdWS, 'Site Data');
 
   // ── AP Tracker sheet ──
-  // Row 1: reference row with site info in Z-AJ area (cols 26-36)
-  // Row 2: column headers
-  // Rows 3+: data
-  // Col A=Serial, B=MAC formula, C=vSZ formula, D=Model, E=APName formula, F=Desc formula, G=APNum, H=Bldg, I=Floor, J=Area, K=RawMAC
+  const apWS = {};
+  const apCount = state.aps.length;
 
-  const apHeaders = [
-    'AP Serial Number',
-    'AP MAC (Autofilled from col K)',
-    'vSZ Zone',
-    'AP Model Number',
-    'AP Name (Autofilled)',
-    'Description (Autofilled)',
-    'AP Number',
-    'Building',
-    'Floor (2 digit)',
-    'Installed Area',
-    'Raw MAC Address',
-  ];
-
-  const apRows = [apHeaders];
-  state.aps.forEach((ap, i) => {
-    const rowNum = i + 3; // data starts row 3 (1-indexed, row 1=config, row 2=headers)
-    apRows.push([
-      ap.serial,
-      { f: `IF(K${rowNum}<>"",LEFT(K${rowNum},2)&":"&MID(K${rowNum},3,2)&":"&MID(K${rowNum},5,2)&":"&MID(K${rowNum},7,2)&":"&MID(K${rowNum},9,2)&":"&RIGHT(K${rowNum},2),"")` },
-      s.vsz,
-      ap.model,
-      { f: `CONCAT("${s.vendor}","-","${s.clli}","-","${s.propAbbr.toUpperCase()}","-","${s.vertical}","-","AP",G${rowNum})` },
-      { f: `CONCAT("${s.propAbbr.toUpperCase()}",":",C${rowNum},":",H${rowNum},":",I${rowNum},":",J${rowNum})` },
-      ap.num,
-      ap.building,
-      ap.floor,
-      ap.location,
-      ap.macRaw,
-    ]);
+  // ROW 1: site metadata reference cells in cols Y(25)-AJ(36)
+  // These are what the E and F formulas pull from via $Z$1, $AB$1, $AD$1, $AF$1, $AH$1, $AJ$1
+  const r1meta = {
+    Y1: 'Customer:',
+    Z1: { f: "'Site Data'!B9" },      // Vendor  ← AP Name formula uses $Z$1
+    AA1: 'CLLI Code:',
+    AB1: { f: "'Site Data'!B8" },     // CLLI    ← AP Name formula uses $AB$1
+    AC1: 'Property Name:',
+    AD1: { f: "'Site Data'!B3" },     // PropAbbr← AP Name + Desc formulas use $AD$1
+    AE1: 'Vertical Type:',
+    AF1: { f: "'Site Data'!B10" },    // Vertical← AP Name formula uses $AF$1
+    AG1: 'AP Count:',
+    AH1: { f: "'Site Data'!B12" },    // AP Count← row-limit guard uses $AH$1
+    AI1: 'vSZ Zone:',
+    AJ1: { f: "'Site Data'!B11" },    // vSZ Zone← C formula uses $AJ$1
+  };
+  Object.entries(r1meta).forEach(([addr, val]) => {
+    apWS[addr] = typeof val === 'object' ? val : { v: val, t: 's' };
   });
 
-  const apWS = XLSX.utils.aoa_to_sheet(apRows);
-  // Set column widths
+  // ROW 2: headers — exact text from gold standard
+  const apHeaders = [
+    'AP Serial Number',
+    'AP MAC\n(Autofilled from raw data in Column M ----->)',
+    'vSZ Zone',
+    'AP Model Number',
+    'AP Name\n(Autofilled)',
+    'Description                                                            (Autofilled)',
+    'AP Number Match',
+    'Building',
+    'Floor              (2 digit)',
+    'Installed Area',
+    'Raw MACAddress',
+    'x',
+    'Installation Date',
+    'Cabled Date\n(if pre-wired enter NA)',
+    'CatX CC Test P/F',
+    'RF Signal Level 2.4 GHz',
+    'RF Signal Level 5 GHz',
+    'AP Speed Test DL',
+    'AP Speed Test UL',
+    'Post Install Pkg Completed',
+  ];
+  apHeaders.forEach((h, ci) => {
+    const addr = XLSX.utils.encode_cell({ r: 1, c: ci });
+    apWS[addr] = { v: h, t: 's' };
+  });
+
+  // ROWS 3+: data + formulas
+  state.aps.forEach((ap, i) => {
+    const r = i + 2; // 0-indexed row, so row 3 in Excel = index 2
+    const rn = r + 1; // 1-indexed Excel row number for formula strings
+
+    // A: Serial Number
+    apWS[XLSX.utils.encode_cell({r, c:0})] = ap.serial
+      ? { v: ap.serial, t: 's' } : { v: '', t: 's' };
+
+    // B: MAC formula — mirrors gold standard exactly
+    apWS[XLSX.utils.encode_cell({r, c:1})] = {
+      f: `IF(ROW()-ROW($C$2)<=$AH$1,LEFT(K${rn},2)&":"&MID(K${rn},3,2)&":"&MID(K${rn},5,2)&":"&MID(K${rn},7,2)&":"&MID(K${rn},9,2)&":"&RIGHT(K${rn},2),"")`
+    };
+
+    // C: vSZ Zone formula — mirrors gold standard
+    apWS[XLSX.utils.encode_cell({r, c:2})] = {
+      f: `IF(ROW()-ROW($C$2)<=$AH$1,$AJ$1,"")`
+    };
+
+    // D: Model
+    apWS[XLSX.utils.encode_cell({r, c:3})] = { v: ap.model, t: 's' };
+
+    // E: AP Name formula — mirrors gold standard (CONCAT vendor-clli-prop-vertical-AP###)
+    apWS[XLSX.utils.encode_cell({r, c:4})] = {
+      f: `IF(ROW()-2<=$AH$1,CONCAT($Z$1,"-",$AB$1,"-",UPPER($AD$1),"-",$AF$1,"-","AP",G${rn}),"")`
+    };
+
+    // F: Description formula — mirrors gold standard
+    apWS[XLSX.utils.encode_cell({r, c:5})] = {
+      f: `IF(ROW()-ROW($C$2)<=$AH$1,CONCAT(UPPER($AD$1),":",C${rn},":",H${rn},":",I${rn},":",J${rn}),"")`
+    };
+
+    // G: AP Number (3-digit zero-padded string)
+    apWS[XLSX.utils.encode_cell({r, c:6})] = { v: ap.num, t: 's' };
+
+    // H: Building
+    apWS[XLSX.utils.encode_cell({r, c:7})] = { v: ap.building, t: 's' };
+
+    // I: Floor
+    apWS[XLSX.utils.encode_cell({r, c:8})] = { v: ap.floor, t: 's' };
+
+    // J: Installed Area
+    apWS[XLSX.utils.encode_cell({r, c:9})] = { v: ap.location, t: 's' };
+
+    // K: Raw MAC (12 hex chars, no separators) — this is what B formula reads
+    apWS[XLSX.utils.encode_cell({r, c:10})] = { v: ap.macRaw, t: 's' };
+
+    // L-T: blank columns (spacer + future fields)
+    for (let ci = 11; ci <= 19; ci++) {
+      apWS[XLSX.utils.encode_cell({r, c:ci})] = { v: '', t: 's' };
+    }
+  });
+
+  // Sheet ref
+  apWS['!ref'] = XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r: apCount+2, c:35} });
   apWS['!cols'] = [
-    {wch:16},{wch:18},{wch:16},{wch:14},{wch:52},{wch:58},
-    {wch:10},{wch:10},{wch:10},{wch:28},{wch:16}
+    {wch:18}, // A Serial
+    {wch:20}, // B MAC
+    {wch:16}, // C vSZ
+    {wch:14}, // D Model
+    {wch:52}, // E AP Name
+    {wch:60}, // F Description
+    {wch:10}, // G AP#
+    {wch:10}, // H Building
+    {wch:10}, // I Floor
+    {wch:28}, // J Installed Area
+    {wch:16}, // K Raw MAC
+    {wch:4},  // L x
+    {wch:16}, // M Install Date
+    {wch:16}, // N Cabled Date
+    {wch:14}, // O CatX
+    {wch:14}, // P RF 2.4
+    {wch:14}, // Q RF 5
+    {wch:14}, // R DL
+    {wch:14}, // S UL
+    {wch:20}, // T Post Install
   ];
   XLSX.utils.book_append_sheet(wb, apWS, 'AP Tracker');
 
   // ── Net Equip Tracker sheet ──
+  // Exact column order from gold standard:
+  // A=DeviceType, B=DeviceName, C=IP, D=UplinkPort, E=NumAPs,
+  // F=MODEL, G=MAC(formula from L), H=Building, I=Floor, J=DeviceNum,
+  // K=Serial, L=RawMAC, M=InstallDate, N=InstallLocation, O=NOTES
   const netHeaders = [
-    'Device Type','Device Name','IP Address','Uplink Port','Number of APs',
-    'MODEL','MAC Address (Autofilled)','Building','Floor (2 digit)','Device Number',
-    'Serial #','Raw MAC Address','Install Date','Install Location','NOTES'
+    'Device Type',
+    'Device Name',
+    'IP Address',
+    'Uplink Port',
+    'Number of \nAPs',
+    'MODEL',
+    'MAC Address\n(Autofilled from column K ---->)',
+    'Building',
+    'Floor (2 digit)',
+    'Device Number',
+    'Serial #',
+    'Fill-in Raw Mac Address here',
+    'Network Device Install Date',
+    'Install Location                       (MDF/IDF Room #)',
+    'NOTES',
   ];
-  const netRows = [netHeaders];
-  state.netEquip.forEach((sw, i) => {
-    const rowNum = i + 2;
-    netRows.push([
-      sw.deviceType,
-      switchName(sw),
-      '',
-      '',
-      '',
-      sw.model,
-      sw.macRaw
-        ? { f: `LEFT(L${rowNum},2)&":"&MID(L${rowNum},3,2)&":"&MID(L${rowNum},5,2)&":"&MID(L${rowNum},7,2)&":"&MID(L${rowNum},9,2)&":"&RIGHT(L${rowNum},2)` }
-        : '',
-      sw.building,
-      sw.floor,
-      sw.deviceNum,
-      sw.serial,
-      sw.macRaw,
-      '',
-      sw.location,
-      sw.notes || '',
-    ]);
+
+  const netWS = {};
+  netHeaders.forEach((h, ci) => {
+    netWS[XLSX.utils.encode_cell({r:0, c:ci})] = { v: h, t: 's' };
   });
 
-  const netWS = XLSX.utils.aoa_to_sheet(netRows);
+  state.netEquip.forEach((sw, i) => {
+    const r = i + 1;
+    const rn = r + 1;
+    const isAgg = sw.deviceType.toLowerCase().includes('aggregate');
+    const isFW  = sw.deviceType.toLowerCase().includes('fire') || sw.deviceType.toLowerCase().includes('gate');
+    const nameType = isFW ? 'FGT' : isAgg ? 'AGG' : 'POE';
+    const devName = isFW
+      ? `${s.propAbbr}-FGT-01`
+      : `ICX-${s.vendor}-${s.siteName.replace(/[^a-zA-Z0-9]/g,'')}-${nameType}-${sw.building}${sw.floor}${sw.deviceNum}`;
+
+    netWS[XLSX.utils.encode_cell({r, c:0})]  = { v: sw.deviceType, t:'s' };
+    netWS[XLSX.utils.encode_cell({r, c:1})]  = { v: devName, t:'s' };
+    netWS[XLSX.utils.encode_cell({r, c:2})]  = { v: '', t:'s' };  // IP — from design doc
+    netWS[XLSX.utils.encode_cell({r, c:3})]  = { v: '', t:'s' };  // Uplink port
+    netWS[XLSX.utils.encode_cell({r, c:4})]  = { v: '', t:'s' };  // Num APs
+    netWS[XLSX.utils.encode_cell({r, c:5})]  = { v: sw.model, t:'s' };
+    // G: MAC formula from col L (raw MAC)
+    netWS[XLSX.utils.encode_cell({r, c:6})]  = sw.macRaw
+      ? { f: `LEFT(L${rn},2)&":"&MID(L${rn},3,2)&":"&MID(L${rn},5,2)&":"&MID(L${rn},7,2)&":"&MID(L${rn},9,2)&":"&RIGHT(L${rn},2)` }
+      : { v: '', t:'s' };
+    netWS[XLSX.utils.encode_cell({r, c:7})]  = { v: sw.building, t:'s' };
+    netWS[XLSX.utils.encode_cell({r, c:8})]  = { v: sw.floor, t:'s' };
+    netWS[XLSX.utils.encode_cell({r, c:9})]  = { v: sw.deviceNum, t:'s' };
+    netWS[XLSX.utils.encode_cell({r, c:10})] = { v: sw.serial, t:'s' };
+    netWS[XLSX.utils.encode_cell({r, c:11})] = { v: sw.macRaw, t:'s' }; // L: raw MAC
+    netWS[XLSX.utils.encode_cell({r, c:12})] = { v: '', t:'s' };
+    netWS[XLSX.utils.encode_cell({r, c:13})] = { v: sw.location, t:'s' };
+    netWS[XLSX.utils.encode_cell({r, c:14})] = { v: sw.notes||'', t:'s' };
+  });
+
+  const netRowCount = Math.max(state.netEquip.length, 1);
+  netWS['!ref'] = XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:netRowCount, c:14} });
   netWS['!cols'] = [
-    {wch:18},{wch:48},{wch:14},{wch:12},{wch:12},
-    {wch:16},{wch:18},{wch:10},{wch:10},{wch:12},
-    {wch:14},{wch:16},{wch:14},{wch:24},{wch:24}
+    {wch:20},{wch:52},{wch:14},{wch:14},{wch:10},
+    {wch:18},{wch:20},{wch:10},{wch:10},{wch:12},
+    {wch:16},{wch:20},{wch:16},{wch:28},{wch:24},
   ];
   XLSX.utils.book_append_sheet(wb, netWS, 'Net Equip Tracker');
 
