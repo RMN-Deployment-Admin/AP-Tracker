@@ -878,14 +878,14 @@ function exportXLSX() {
     // D: Model
     apWS[XLSX.utils.encode_cell({r, c:3})] = { v: ap.model, t: 's' };
 
-    // E: AP Name formula — mirrors gold standard (CONCAT vendor-clli-prop-vertical-AP###)
+    // E: AP Name formula — use & concatenation (avoids @ implicit intersection in Excel)
     apWS[XLSX.utils.encode_cell({r, c:4})] = {
-      f: `IF(ROW()-2<=$AH$1,CONCAT($Z$1,"-",$AB$1,"-",UPPER($AD$1),"-",$AF$1,"-","AP",G${rn}),"")`
+      f: `IF(ROW()-2<=$AH$1,$Z$1&"-"&$AB$1&"-"&UPPER($AD$1)&"-"&$AF$1&"-"&"AP"&G${rn},"")`
     };
 
-    // F: Description formula — mirrors gold standard
+    // F: Description formula — use & concatenation
     apWS[XLSX.utils.encode_cell({r, c:5})] = {
-      f: `IF(ROW()-ROW($C$2)<=$AH$1,CONCAT(UPPER($AD$1),":",C${rn},":",H${rn},":",I${rn},":",J${rn}),"")`
+      f: `IF(ROW()-ROW($C$2)<=$AH$1,UPPER($AD$1)&":"&C${rn}&":"&H${rn}&":"&I${rn}&":"&J${rn},"")`
     };
 
     // G: AP Number (3-digit zero-padded string)
