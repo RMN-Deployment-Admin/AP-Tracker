@@ -491,29 +491,26 @@ function padNum(n, len) {
 }
 
 // ── MAIN PARSER ──
-// Now that pdf.js extraction preserves newlines, we use ^line$ anchored patterns.
 function parsePDF(text) {
-  // Normalize: collapse multiple spaces on same line, but keep newlines intact
+  // Normalize: collapse multiple spaces per line, keep newlines intact
   const t = text.split('\n').map(l => l.replace(/[ \t]+/g, ' ').trim()).join('\n');
 
-  // Helper: grab value from "Label  Value" line (label and value on same line)
+  // Grab value from "Label  Value" single line
   function line(label) {
-    const m = t.match(new RegExp('^' + label.replace(/[()#]/g, '\\$&') + '\\s+(.+)$', 'm'));
+    const escaped = label.replace(/[-[\]{}()*+?.,\\^$|#]/g, '\\$&');
+    const m = t.match(new RegExp('^' + escaped + '\\s+(.+)$', 'm'));
     return m ? m[1].trim() : '';
   }
 
-  const siteName  = line('Site Name');
-  const clli      = line('CLLI Code');
-  const vsz       = line('Property ID \(Realm\)');
-  const address   = line('Full Address \(Street#, City, State, Zip, Code\)') || line('Full Address');
+  const siteName   = line('Site Name');
+  const clli       = line('CLLI Code');
+  const vsz        = line('Property ID (Realm)');
+  const address    = line('Full Address (Street#, City, State, Zip, Code)') || line('Full Address');
   const circuitRaw = line('Circuit ID #');
-  const circuit   = circuitRaw.includes(';') ? circuitRaw.substring(0, circuitRaw.indexOf(';') + 1) : circuitRaw;
-  const vendor    = detectVendor(t);
+  const circuit    = circuitRaw.includes(';') ? circuitRaw.substring(0, circuitRaw.indexOf(';') + 1) : circuitRaw;
+  const vendor     = detectVendor(t);
+  const propAbbr   = siteName.replace(/[^a-zA-Z0-9]/g, '').substring(0, 24);
 
-  // Property abbreviation: site name, no spaces/special chars, max 24
-  const propAbbr  = siteName.replace(/[^a-zA-Z0-9]/g, '').substring(0, 24);
-
-  // Fill form fields
   setField('f-siteName', siteName);
   setField('f-propAbbr', propAbbr);
   setField('f-clli', clli.toUpperCase());
@@ -527,36 +524,23 @@ function parsePDF(text) {
   }
 
   // ── PARSE APs ──
-  // Each AP block has consistent line order:
-  //   AP Device Number  ##
-  //   AP Building Number  ##
-  //   AP Floor Number  ##
-  //   AP Location Description  <location>
-  //   Provide the room... (optional instruction line — skip it)
-  //   Back of Lobby...   (optional continuation — skip it)
-  //   AP Device Model  <model>
-  //   AP Serial Number  <serial>
-  //   AP MAC Address  <mac>
-  const apPattern = /AP Device Number\s+(\d+)
-AP Building Number\s+(\d+)
-AP Floor Number\s+(\d+)
-AP Location Description\s+(.+?)
-(?:Provide the room[^
-]*
-(?:[^
-]*etc\)[^
-]*
-)?)?AP Device Model\s+(.+?)
-AP Serial Number\s+(\d+)
-AP MAC Address\s+([^
-]+)/g;
+  // Use \\n in regex strings — literal newlines in regex literals cause JS syntax errors
+  const apPattern = new RegExp(
+    'AP Device Number\\s+(\\d+)\\n' +
+    'AP Building Number\\s+(\\d+)\\n' +
+    'AP Floor Number\\s+(\\d+)\\n' +
+    'AP Location Description\\s+([^\\n]+)\\n' +
+    '(?:Provide the room[^\\n]*\\n(?:[^\\n]*etc\\)[^\\n]*\\n)?)?' +
+    'AP Device Model\\s+([^\\n]+)\\n' +
+    'AP Serial Number\\s+(\\d+)\\n' +
+    'AP MAC Address\\s+([^\\n]+)',
+    'g'
+  );
 
   state.aps = [];
   let m;
   while ((m = apPattern.exec(t)) !== null) {
     const [, num, building, floor, location, model, serial, macRaw] = m;
-    // Clean location: strip any residual page header/footer lines
-    const cleanLoc = location.split('\n')[0].trim();
     state.aps.push({
       num:      padNum(parseInt(num), 3),
       serial:   serial.trim(),
@@ -565,30 +549,22 @@ AP MAC Address\s+([^
       model:    model.trim(),
       building: building.padStart(2, '0'),
       floor:    floor.padStart(2, '0'),
-      location: cleanLoc,
+      location: location.trim(),
     });
   }
 
   // ── PARSE NETWORK DEVICES ──
-  // Each device block:
-  //   Network Device Type  <type>
-  //   Network Device Model  <model>
-  //   Network Device Number  ##
-  //   Network Device Building Number  ##
-  //   Network Device Floor Number  ##
-  //   Network Device Location (Room# or Name)  <location>
-  //   Network Device Serial Number  <serial>
-  //   Network Device MAC Address  <mac>
-  const netPattern = /Network Device Type\s+(.+?)
-Network Device Model\s+(.+?)
-Network Device Number\s+(\d+)
-Network Device Building Number\s+(\d+)
-Network Device Floor Number\s+(\d+)
-Network Device Location[^
-]*\s+(.+?)
-Network Device Serial Number\s+(\S+)
-Network Device MAC Address\s+([^
-]+)/g;
+  const netPattern = new RegExp(
+    'Network Device Type\\s+([^\\n]+)\\n' +
+    'Network Device Model\\s+([^\\n]+)\\n' +
+    'Network Device Number\\s+(\\d+)\\n' +
+    'Network Device Building Number\\s+(\\d+)\\n' +
+    'Network Device Floor Number\\s+(\\d+)\\n' +
+    'Network Device Location[^\\n]*\\s+([^\\n]+)\\n' +
+    'Network Device Serial Number\\s+(\\S+)\\n' +
+    'Network Device MAC Address\\s+([^\\n]+)',
+    'g'
+  );
 
   state.netEquip = [];
   let nm;
