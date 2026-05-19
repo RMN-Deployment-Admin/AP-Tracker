@@ -1123,6 +1123,12 @@ function exportXLSX() {
   ];
   XLSX.utils.book_append_sheet(wb, netWS, 'Net Equip Tracker');
 
+  // ── LLDP Report sheet ──
+  // Intentionally blank — populated manually after export.
+  const lldpWS = {};
+  lldpWS['!ref'] = 'A1:A1';
+  XLSX.utils.book_append_sheet(wb, lldpWS, 'LLDP Report');
+
   // Download
   const filename = `AP_Tracker_${s.clli || 'export'}_${s.siteName.replace(/[^a-zA-Z0-9]/g,'_') || 'site'}.xlsx`;
   XLSX.writeFile(wb, filename);
