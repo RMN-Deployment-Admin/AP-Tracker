@@ -560,7 +560,36 @@ function padNum(n, len) {
 // ── MAIN PARSER ──
 function parsePDF(text) {
   // Normalize: collapse multiple spaces per line, keep newlines intact
-  const t = text.split('\n').map(l => l.replace(/[ \t]+/g, ' ').trim()).join('\n');
+  let lines = text.split('\n').map(l => l.replace(/[ \t]+/g, ' ').trim());
+
+  // ── STRIP PDF PAGE BOILERPLATE ──
+  // TrueContext PDFs interleave a footer block on every page that wedges itself
+  // between data fields (e.g. between "AP Floor Number" and "AP Location Description"),
+  // breaking regexes that expect contiguous fields. We remove three classes of junk:
+  //   1. "...PAGE X OF Y" footer lines
+  //   2. "...YYYY-MM-DD - HH:MM:SS" submission-stamp lines
+  //   3. Submitter watermark lines (a short all-caps token repeating many times)
+  // We detect the watermark dynamically so this works across submitters/customers.
+  const lineCounts = {};
+  for (const l of lines) {
+    const s = l.trim();
+    if (s) lineCounts[s] = (lineCounts[s] || 0) + 1;
+  }
+  const watermarks = new Set();
+  const dataLabelRE = /(AP|NETWORK|WIRELESS|RADIO|ACCESS|SAMPLING|DEVICE|PROJECT|GENERAL|SITE|INFORMATION|TESTING|INSTALL|SIGN|CONTACT|WIFI|WI-FI|SPEED|TEST|MDF|IDF|NETWORK DEVICES|WIRED|PORT)/;
+  for (const [s, count] of Object.entries(lineCounts)) {
+    if (count >= 5 && /^[A-Z][A-Z\s.\-]{1,30}$/.test(s) && !dataLabelRE.test(s)) {
+      watermarks.add(s);
+    }
+  }
+  lines = lines.filter(l => {
+    const s = l.trim();
+    if (/\bPAGE\s+\d+\s+OF\s+\d+\s*$/i.test(s)) return false;       // page X of Y
+    if (/\d{4}-\d{2}-\d{2}\s+-\s+\d{1,2}:\d{2}:\d{2}\s*$/.test(s)) return false; // datestamp
+    if (watermarks.has(s)) return false;                              // submitter watermark
+    return true;
+  });
+  const t = lines.join('\n');
 
   // Grab value from "Label  Value" single line
   function line(label) {
@@ -591,15 +620,19 @@ function parsePDF(text) {
   }
 
   // ── PARSE APs ──
-  // Use \\n in regex strings — literal newlines in regex literals cause JS syntax errors
+  // Use \\n in regex strings — literal newlines in regex literals cause JS syntax errors.
+  // Between fields we allow any number of "stray" lines, but a negative lookahead
+  // (?!AP Device Number) keeps the lazy junk-skip from crossing into the *next* AP block
+  // when a field is missing. This matters because TrueContext PDFs sometimes wedge
+  // page-footer/banner lines between fields (e.g. between Floor Number and Location).
+  const apJunk = '(?:(?!AP Device Number)[^\\n]*\\n)*?';
   const apPattern = new RegExp(
-    'AP Device Number\\s+(\\d+)\\n' +
-    'AP Building Number\\s+(\\d+)\\n' +
-    'AP Floor Number\\s+(\\d+)\\n' +
-    'AP Location Description\\s+([^\\n]+)\\n' +
-    '(?:Provide the room[^\\n]*\\n(?:[^\\n]*etc\\)[^\\n]*\\n)?)?' +
-    'AP Device Model\\s+([^\\n]+)\\n' +
-    'AP Serial Number\\s+(\\d+)\\n' +
+    'AP Device Number\\s+(\\d+)\\s*\\n' + apJunk +
+    'AP Building Number\\s+(\\d+)\\s*\\n' + apJunk +
+    'AP Floor Number\\s+(\\d+)\\s*\\n' + apJunk +
+    'AP Location Description\\s+([^\\n]+)\\n' + apJunk +
+    'AP Device Model\\s+([^\\n]+)\\n' + apJunk +
+    'AP Serial Number\\s+(\\d+)\\s*\\n' + apJunk +
     'AP MAC Address\\s+([^\\n]+)',
     'g'
   );
@@ -621,14 +654,17 @@ function parsePDF(text) {
   }
 
   // ── PARSE NETWORK DEVICES ──
+  // Same anchored junk-tolerance as APs: negative lookahead keeps the lazy skip from
+  // crossing into the next device block when a field is missing.
+  const netJunk = '(?:(?!Network Device Type)[^\\n]*\\n)*?';
   const netPattern = new RegExp(
-    'Network Device Type\\s+([^\\n]+)\\n' +
-    'Network Device Model\\s+([^\\n]+)\\n' +
-    'Network Device Number\\s+(\\d+)\\n' +
-    'Network Device Building Number\\s+(\\d+)\\n' +
-    'Network Device Floor Number\\s+(\\d+)\\n' +
-    'Network Device Location[^\\n]*\\s+([^\\n]+)\\n' +
-    'Network Device Serial Number\\s+(\\S+)\\n' +
+    'Network Device Type\\s+([^\\n]+)\\n' + netJunk +
+    'Network Device Model\\s+([^\\n]+)\\n' + netJunk +
+    'Network Device Number\\s+(\\d+)\\s*\\n' + netJunk +
+    'Network Device Building Number\\s+(\\d+)\\s*\\n' + netJunk +
+    'Network Device Floor Number\\s+(\\d+)\\s*\\n' + netJunk +
+    'Network Device Location[^\\n]*\\s+([^\\n]+)\\n' + netJunk +
+    'Network Device Serial Number\\s+(\\S+)\\s*\\n' + netJunk +
     'Network Device MAC Address\\s+([^\\n]+)',
     'g'
   );
