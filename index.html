@@ -621,70 +621,59 @@ function parsePDF(text) {
     if (vendorSel.options[i].value === vendor) { vendorSel.selectedIndex = i; break; }
   }
 
-  // ── PARSE APs ──
-  // Use \\n in regex strings — literal newlines in regex literals cause JS syntax errors.
-  // Between fields we allow any number of "stray" lines, but a negative lookahead
-  // (?!AP Device Number) keeps the lazy junk-skip from crossing into the *next* AP block
-  // when a field is missing. This matters because TrueContext PDFs sometimes wedge
-  // page-footer/banner lines between fields (e.g. between Floor Number and Location).
-  const apJunk = '(?:(?!AP Device Number)[^\\n]*\\n)*?';
-  const apPattern = new RegExp(
-    'AP Device Number\\s+(\\d+)\\s*\\n' + apJunk +
-    'AP Building Number\\s+(\\d+)\\s*\\n' + apJunk +
-    'AP Floor Number\\s+(\\d+)\\s*\\n' + apJunk +
-    'AP Location Description\\s+([^\\n]+)\\n' + apJunk +
-    'AP Device Model\\s+([^\\n]+)\\n' + apJunk +
-    'AP Serial Number\\s+(\\d+)\\s*\\n' + apJunk +
-    'AP MAC Address\\s+([^\\n]+)',
-    'g'
-  );
+  // ── ORDER-AGNOSTIC FIELD EXTRACTION ──
+  // Grab a labeled field from within a single device's text chunk. Anchored to start-of-line
+  // so it can't match a label that appears mid-value. Unlike a chained sequential regex, this
+  // doesn't care what order the fields appear in — each label is searched independently within
+  // its own chunk, so a form template that reorders fields (as this one does for APs, putting
+  // "AP Device Model" before "AP Device Number") can't break the match.
+  function grabField(chunk, label) {
+    const escaped = label.replace(/[-[\]{}()*+?.,\\^$|#]/g, '\\$&');
+    const m = chunk.match(new RegExp('^' + escaped + '\\s+([^\\n]+)$', 'm'));
+    return m ? m[1].trim() : '';
+  }
 
+  // Split the document into one chunk per device using the form's own per-device page
+  // counters as delimiters ("WIRELESS RADIO DEVICES N OF M", "NETWORK DEVICE DATA AND
+  // INSTALLATION N OF M"). These counters are printed once per AP/network device by
+  // TrueContext regardless of field order or page-break placement, so they're a much more
+  // reliable anchor than chaining field labels together.
+
+  // ── PARSE APs ──
+  const apChunks = t.split(/WIRELESS RADIO DEVICES\s+\d+\s+OF\s+\d+/).slice(1);
   state.aps = [];
-  let m;
-  while ((m = apPattern.exec(t)) !== null) {
-    const [, num, building, floor, location, model, serial, macRaw] = m;
+  for (const chunk of apChunks) {
+    const num = grabField(chunk, 'AP Device Number');
+    if (!num) continue; // not an actual AP block (e.g. trailing Network Testing section)
     state.aps.push({
       num:      padNum(parseInt(num), 3),
-      serial:   serial.trim(),
-      macRaw:   stripMAC(macRaw.trim()),
-      mac:      formatMAC(macRaw.trim()),
-      model:    model.trim(),
-      building: building.padStart(2, '0'),
-      floor:    floor.padStart(2, '0'),
-      location: location.trim(),
+      serial:   grabField(chunk, 'AP Serial Number'),
+      macRaw:   stripMAC(grabField(chunk, 'AP MAC Address')),
+      mac:      formatMAC(grabField(chunk, 'AP MAC Address')),
+      model:    grabField(chunk, 'AP Device Model'),
+      building: grabField(chunk, 'AP Building Number').padStart(2, '0'),
+      floor:    grabField(chunk, 'AP Floor Number').padStart(2, '0'),
+      location: grabField(chunk, 'AP Location Description'),
     });
   }
 
   // ── PARSE NETWORK DEVICES ──
-  // Same anchored junk-tolerance as APs: negative lookahead keeps the lazy skip from
-  // crossing into the next device block when a field is missing.
-  const netJunk = '(?:(?!Network Device Type)[^\\n]*\\n)*?';
-  const netPattern = new RegExp(
-    'Network Device Type\\s+([^\\n]+)\\n' + netJunk +
-    'Network Device Model\\s+([^\\n]+)\\n' + netJunk +
-    'Network Device Number\\s+(\\d+)\\s*\\n' + netJunk +
-    'Network Device Building Number\\s+(\\d+)\\s*\\n' + netJunk +
-    'Network Device Floor Number\\s+(\\d+)\\s*\\n' + netJunk +
-    'Network Device Location[^\\n]*\\s+([^\\n]+)\\n' + netJunk +
-    'Network Device Serial Number\\s+(\\S+)\\s*\\n' + netJunk +
-    'Network Device MAC Address\\s+([^\\n]+)',
-    'g'
-  );
-
+  const netChunks = t.split(/NETWORK DEVICE DATA AND\s+INSTALLATION\s+\d+\s+OF\s+\d+/).slice(1);
   state.netEquip = [];
-  let nm;
-  while ((nm = netPattern.exec(t)) !== null) {
-    const [, deviceType, model, devNum, building, floor, location, serial, macRaw] = nm;
+  for (const chunk of netChunks) {
+    const deviceType = grabField(chunk, 'Network Device Type');
+    if (!deviceType) continue;
+    const location = grabField(chunk, 'Network Device Location (Room# or Name)') || grabField(chunk, 'Network Device Location');
     state.netEquip.push({
-      deviceType: deviceType.trim(),
-      model:      model.trim(),
-      deviceNum:  devNum.padStart(2, '0'),
-      building:   building.padStart(2, '0'),
-      floor:      floor.padStart(2, '0'),
-      location:   location.trim(),
-      serial:     serial.trim(),
-      macRaw:     stripMAC(macRaw.trim()),
-      mac:        formatMAC(macRaw.trim()),
+      deviceType: deviceType,
+      model:      grabField(chunk, 'Network Device Model'),
+      deviceNum:  grabField(chunk, 'Network Device Number').padStart(2, '0'),
+      building:   grabField(chunk, 'Network Device Building Number').padStart(2, '0'),
+      floor:      grabField(chunk, 'Network Device Floor Number').padStart(2, '0'),
+      location:   location,
+      serial:     grabField(chunk, 'Network Device Serial Number'),
+      macRaw:     stripMAC(grabField(chunk, 'Network Device MAC Address')),
+      mac:        formatMAC(grabField(chunk, 'Network Device MAC Address')),
       notes:      '',
     });
   }
