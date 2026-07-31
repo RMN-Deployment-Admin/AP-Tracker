@@ -137,6 +137,7 @@
     transition: border-color .15s;
   }
   .cell-input:focus { border-color: var(--orange); }
+  .cell-input.mac-invalid { border-color: #dc2626; color: #f87171; }
 
   /* ── BUTTONS ── */
   .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
@@ -324,6 +325,7 @@
           <option value="MCOM">MCOM – Mediacom</option>
           <option value="PETRA">PETRA – Petra</option>
           <option value="AMT">AMT – AMT</option>
+          <option value="ALT">ALT – ALT</option>
         </select>
       </div>
       <div class="form-group">
@@ -756,7 +758,8 @@ function apDesc(ap) {
 function switchName(sw) {
   const s = state.site;
   const type = sw.deviceType.toLowerCase().includes('aggregate') ? 'AGG' : 'POE';
-  return `ICX-${s.vendor}-${s.siteName.replace(/[^a-zA-Z0-9]/g,'')}-${type}-${sw.building}${sw.floor}${sw.deviceNum}`;
+  const vendorSeg = s.vendor === 'ALT' ? '' : `${s.vendor}-`;
+  return `ICX-${vendorSeg}${s.siteName.replace(/[^a-zA-Z0-9]/g,'')}-${type}-${sw.building}${sw.floor}${sw.deviceNum}`;
 }
 
 // ── RENDER AP TABLE ──
@@ -775,11 +778,12 @@ function renderAPTable() {
   ].join('');
 
   state.aps.forEach((ap, i) => {
+    const macBad = ap.macRaw && ap.macRaw.length !== 12;
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class="td-num">${ap.num}</td>
       <td><input class="cell-input" style="width:110px" value="${ap.serial||''}" placeholder="missing" oninput="state.aps[${i}].serial=this.value"></td>
-      <td><input class="cell-input" style="width:135px" value="${ap.mac||''}" placeholder="missing" oninput="state.aps[${i}].mac=this.value;state.aps[${i}].macRaw=this.value.replace(/[^a-fA-F0-9]/g,'').toUpperCase()"></td>
+      <td><input class="cell-input${macBad ? ' mac-invalid' : ''}" id="mac-${i}" style="width:135px" value="${ap.mac||''}" placeholder="missing" title="${macBad ? 'MAC strips to ' + ap.macRaw.length + ' chars, expected 12 — check for a typo (e.g. letter O instead of 0)' : ''}" oninput="state.aps[${i}].mac=this.value;state.aps[${i}].macRaw=this.value.replace(/[^a-fA-F0-9]/g,'').toUpperCase();checkMAC(${i})"></td>
       <td>${ap.model}</td>
       <td><input class="cell-input" style="width:50px" value="${ap.building}" oninput="updateAP(${i},'building',this.value)"></td>
       <td><input class="cell-input" style="width:50px" value="${ap.floor}" oninput="updateAP(${i},'floor',this.value)"></td>
@@ -790,9 +794,18 @@ function renderAPTable() {
   });
 
   const missing = state.aps.filter(a => !a.serial).length;
-  document.getElementById('apHint').innerHTML = missing
-    ? `<strong>Note:</strong> ${missing} AP(s) have missing serial numbers — these can be filled in the exported Excel file.`
-    : '';
+  const badMacs = state.aps.filter(a => a.macRaw && a.macRaw.length !== 12).length;
+  const notes = [];
+  if (missing) notes.push(`${missing} AP(s) have missing serial numbers — these can be filled in the exported Excel file.`);
+  if (badMacs) notes.push(`${badMacs} AP(s) have a MAC that doesn't reduce to 12 hex characters (highlighted in red) — likely a typo in the source PDF (e.g. letter O instead of 0). Fix these before exporting or the MAC/AP Name formulas will misalign.`);
+  document.getElementById('apHint').innerHTML = notes.length ? `<strong>Note:</strong> ${notes.join(' ')}` : '';
+}
+
+function checkMAC(i) {
+  const el = document.getElementById('mac-' + i);
+  const bad = state.aps[i].macRaw && state.aps[i].macRaw.length !== 12;
+  el.classList.toggle('mac-invalid', bad);
+  el.title = bad ? `MAC strips to ${state.aps[i].macRaw.length} chars, expected 12 — check for a typo (e.g. letter O instead of 0)` : '';
 }
 
 function updateAP(i, field, val) {
@@ -815,13 +828,14 @@ function renderNetTable() {
     const typeClass = sw.deviceType.toLowerCase().includes('aggregate') ? 'device-type-agg'
       : sw.deviceType.toLowerCase().includes('fire') || sw.deviceType.toLowerCase().includes('gate') ? 'device-type-fw'
       : 'device-type-poe';
+    const netMacBad = sw.macRaw && sw.macRaw.length !== 12;
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class="${typeClass}">${sw.deviceType}</td>
       <td style="color:var(--blue);font-size:10px">${switchName(sw)}</td>
       <td><input class="cell-input" style="width:110px" value="${sw.model}" oninput="state.netEquip[${i}].model=this.value"></td>
       <td><input class="cell-input" style="width:100px" value="${sw.serial}" oninput="state.netEquip[${i}].serial=this.value"></td>
-      <td><input class="cell-input" style="width:130px" value="${sw.mac}" oninput="state.netEquip[${i}].mac=this.value;state.netEquip[${i}].macRaw=this.value.replace(/[^a-fA-F0-9]/g,'')"></td>
+      <td><input class="cell-input${netMacBad ? ' mac-invalid' : ''}" id="netmac-${i}" style="width:130px" value="${sw.mac}" title="${netMacBad ? 'MAC strips to ' + sw.macRaw.length + ' chars, expected 12' : ''}" oninput="state.netEquip[${i}].mac=this.value;state.netEquip[${i}].macRaw=this.value.replace(/[^a-fA-F0-9]/g,'').toUpperCase();checkNetMAC(${i})"></td>
       <td><input class="cell-input" style="width:50px" value="${sw.building}" oninput="state.netEquip[${i}].building=this.value"></td>
       <td><input class="cell-input" style="width:50px" value="${sw.floor}" oninput="state.netEquip[${i}].floor=this.value"></td>
       <td><input class="cell-input" style="width:50px" value="${sw.deviceNum}" oninput="state.netEquip[${i}].deviceNum=this.value"></td>
@@ -829,6 +843,13 @@ function renderNetTable() {
       <td><input class="cell-input" style="width:120px" value="${sw.notes||''}" oninput="state.netEquip[${i}].notes=this.value"></td>`;
     tbody.appendChild(tr);
   });
+}
+
+function checkNetMAC(i) {
+  const el = document.getElementById('netmac-' + i);
+  const bad = state.netEquip[i].macRaw && state.netEquip[i].macRaw.length !== 12;
+  el.classList.toggle('mac-invalid', bad);
+  el.title = bad ? `MAC strips to ${state.netEquip[i].macRaw.length} chars, expected 12` : '';
 }
 
 // ── EXPORT XLSX ──
@@ -1092,7 +1113,7 @@ function exportXLSX() {
     const nameType = isFW ? 'FGT' : isAgg ? 'AGG' : 'POE';
     const devName = isFW
       ? `${s.propAbbr}-FGT-01`
-      : `ICX-${s.vendor}-${s.siteName.replace(/[^a-zA-Z0-9]/g,'')}-${nameType}-${sw.building}${sw.floor}${sw.deviceNum}`;
+      : switchName(sw);
 
     netWS[XLSX.utils.encode_cell({r, c:0})]  = { v: sw.deviceType, t:'s' };
     netWS[XLSX.utils.encode_cell({r, c:1})]  = { v: devName, t:'s' };
